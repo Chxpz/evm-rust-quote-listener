@@ -11,6 +11,11 @@ use std::fs;
 use tokio::task;
 use tokio::time::{sleep, Duration};
 use std::collections::HashMap;
+use tracing::{info, error};
+use tracing_subscriber;
+use futures::future;
+
+const MIN_ARBITRAGE_DIFFERENCE: f64 = 0.01;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Pool {
@@ -33,70 +38,119 @@ struct NetworksConfig {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Initialize logging
+    tracing_subscriber::fmt::init();
+
     // Load environment variables from .env
     dotenv().ok();
 
-    println!("Initializing listener");
+    info!("Initializing listener");
 
     // Load the JSON file
     let json_data = fs::read_to_string("target_pools.json")?;
     let config: NetworksConfig = serde_json::from_str(&json_data)?;
 
+    // Validate configuration
+    validate_config(&config)?;
+
     // For each network in the JSON
     for network in config.networks {
-        // Fetch the WebSocket URL from the environment
-        let websocket = env::var(&network.websocket_env).expect(&format!(
-            "Environment variable {} not found",
-            network.websocket_env
-        ));
+        let websocket_env = network.websocket_env.clone();
         let pools = network.pools.clone();
+
+        // Fetch the WebSocket URL from the environment
+        let websocket = env::var(&websocket_env).expect(&format!(
+            "Environment variable {} not found",
+            websocket_env
+        ));
 
         // Start an asynchronous task to process this network
         task::spawn(async move {
-            listen_to_network(&network.network, &websocket, &pools).await;
+            if let Err(e) = listen_to_network(&network.network, &websocket, pools).await {
+                error!("Error in network {}: {}", network.network, e);
+            }
         });
     }
 
     // Main loop to keep the program running
     loop {
-        println!("Running...");
+        info!("Running...");
         sleep(Duration::from_secs(60)).await;
     }
 }
 
-async fn listen_to_network(network_name: &str, websocket: &str, pools: &[Pool]) {
-    println!("Connecting to websocket: {}", websocket);
+fn validate_config(config: &NetworksConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if config.networks.is_empty() {
+        return Err("No networks found in JSON configuration".into());
+    }
 
+    for network in &config.networks {
+        if network.websocket_env.is_empty() {
+            return Err(format!("WebSocket env missing for network {}", network.network).into());
+        }
+    }
+
+    Ok(())
+}
+
+async fn listen_to_network(network_name: &str, websocket: &str, pools: Vec<Pool>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    info!("Connecting to websocket: {}", websocket);
+
+    let provider = Arc::new(connect_with_retry(websocket, 3).await?);
     let mut prices: HashMap<String, Vec<(String, f64)>> = HashMap::new();
 
+    let mut handles = Vec::new();
+
     for pool in pools {
-        match fetch_token_price(&pool.pool_address, &pool.abi, websocket).await {
-            Ok(price) => {
-                let price_f64 = price.as_u64() as f64 / 1e18; // Convert U256 to float
+        let provider = provider.clone();
+        let network_name = network_name.to_string();
+        let pool = pool.clone();
 
-                // Log the price
-                println!(
-                    "Network: {}, Asset: {}, Market: {}, Price: {:.6}",
-                    network_name, pool.asset, pool.market, price_f64
-                );
+        // Spawn a task for each pool
+        let handle = tokio::spawn(async move {
+            match fetch_token_price(&pool.pool_address, &pool.abi, &provider).await {
+                Ok(price) => {
+                    let price_f64 = price.as_u64() as f64 / 1e18;
+                    info!(
+                        "Network: {}, Asset: {}, Market: {}, Price: {:.6}",
+                        network_name, pool.asset, pool.market, price_f64
+                    );
+                    Ok((pool.asset, pool.market, price_f64))
+                }
+                Err(e) => {
+                    error!(
+                        "Error fetching price for pool {}: {}",
+                        pool.pool_address, e
+                    );
+                    Err(e)
+                }
+            }
+        });
 
-                // Store the price for comparison
-                prices
-                    .entry(pool.asset.clone())
-                    .or_insert_with(Vec::new)
-                    .push((pool.market.clone(), price_f64));
-            }
-            Err(e) => {
-                eprintln!(
-                    "Error fetching price for pool {}: {}",
-                    pool.pool_address, e
-                );
-            }
+        handles.push(handle);
+    }
+
+    // Wait for all tasks to finish
+    let results = futures::future::join_all(handles).await;
+
+    // Process results
+    for result in results {
+        if let Ok(Ok((asset, market, price))) = result {
+            prices
+                .entry(asset)
+                .or_insert_with(Vec::new)
+                .push((market, price));
         }
     }
 
     // Check for arbitrage opportunities
+    check_arbitrage_opportunities(network_name, prices);
+
+    Ok(())
+}
+
+fn check_arbitrage_opportunities(network_name: &str, prices: HashMap<String, Vec<(String, f64)>>) {
     for (asset, markets) in prices {
         for i in 0..markets.len() {
             for j in (i + 1)..markets.len() {
@@ -104,8 +158,8 @@ async fn listen_to_network(network_name: &str, websocket: &str, pools: &[Pool]) 
                 let (market2, price2) = &markets[j];
 
                 let diff = (price1 - price2).abs() / price1.max(*price2);
-                if diff > 0.01 {
-                    println!(
+                if diff > MIN_ARBITRAGE_DIFFERENCE {
+                    info!(
                         "TRADE OPPORTUNITY: Network: {}, Asset: {}, Market1: {}, Price1: {:.6}, Market2: {}, Price2: {:.6}, Difference: {:.2}%",
                         network_name, asset, market1, price1, market2, price2, diff * 100.0
                     );
@@ -118,26 +172,35 @@ async fn listen_to_network(network_name: &str, websocket: &str, pools: &[Pool]) 
 pub async fn fetch_token_price(
     pool_address: &str,
     abi: &str,
-    rpc_url: &str,
-) -> Result<U256, Box<dyn Error>> {
-    // Connect to the WebSocket node
-    let provider = Provider::<Ws>::connect(rpc_url).await?;
-    let provider = Arc::new(provider);
-
-    // Parse the contract address
+    provider: &Arc<Provider<Ws>>,
+) -> Result<U256, Box<dyn Error + Send + Sync>> {
     let address: Address = pool_address.parse()?;
-
-    // Parse the contract ABI
     let abi: Abi = serde_json::from_str(abi)?;
+    let contract = Contract::new(address, abi.clone(), provider.clone());
 
-    // Create an instance of the contract
-    let contract = Contract::new(address, abi, provider);
-
-    // Call the contract function to get the price (example: "getQuote")
     let price: U256 = contract
-        .method::<(), U256>("getQuote", ())? // Function name and arguments
+        .method::<(), U256>("getQuote", ())?
         .call()
         .await?;
 
     Ok(price)
+}
+
+pub async fn connect_with_retry(url: &str, retries: usize) -> Result<Provider<Ws>, Box<dyn Error + Send + Sync>> {
+    let mut attempts = 0;
+    let mut delay = 1;
+
+    while attempts < retries {
+        match Provider::<Ws>::connect(url).await {
+            Ok(provider) => return Ok(provider),
+            Err(e) => {
+                error!("Failed to connect: {}. Retrying in {} seconds...", e, delay);
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                delay *= 2; // Exponential backoff
+                attempts += 1;
+            }
+        }
+    }
+
+    Err(format!("Failed to connect after {} attempts", retries).into())
 }
