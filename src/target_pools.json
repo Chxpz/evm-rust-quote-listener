@@ -1,0 +1,59 @@
+{
+    "networks": [
+      {
+        "network": "Ethereum",
+        "websocket_env": "ETHEREUM_WEBSOCKET",
+        "pools": [
+          {
+            "asset": "Dai",
+            "market": "Uniswap",
+            "pool_address": "0x1111111111111111111111111111111111111111",
+            "abi": "[{\"inputs\":[],\"name\":\"getQuote\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+          },
+          {
+            "asset": "Dai",
+            "market": "Aave",
+            "pool_address": "0x1111111111111111111111111111111111111111",
+            "abi": "[{\"inputs\":[],\"name\":\"getQuote\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+          }
+        ]
+      },
+      {
+        "network": "Base",
+        "websocket_env": "BASE_WEBSOCKET",
+        "pools": [
+          {
+            "asset": "USDC",
+            "market": "Uniswap",
+            "pool_address": "0x1111111111111111111111111111111111111111",
+            "abi": "[{\"inputs\":[],\"name\":\"getQuote\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+          },
+          {
+            "asset": "USDC",
+            "market": "Aave",
+            "pool_address": "0x2222222222222222222222222222222222222222",
+            "abi": "[{\"inputs\":[],\"name\":\"getQuote\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+          }
+        ]
+      },
+      {
+        "network": "Sonic",
+        "websocket_env": "SONIC_WEBSOCKET",
+        "pools": [
+          {
+            "asset": "ETH",
+            "market": "Uniswap",
+            "pool_address": "0x1111111111111111111111111111111111111111",
+            "abi": "[{\"inputs\":[],\"name\":\"getQuote\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+          },
+          {
+            "asset": "ETH",
+            "market": "Aave",
+            "pool_address": "0x2222222222222222222222222222222222222222",
+            "abi": "[{\"inputs\":[],\"name\":\"getQuote\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]"
+          }
+        ]
+      }
+    ]
+  }
+  
